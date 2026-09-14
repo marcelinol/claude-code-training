@@ -1,5 +1,8 @@
+import { buildCardNumber } from "@/lib/card-number"
 import { merchants } from "./merchants"
 import {
+  Card,
+  CardStatus,
   Currency,
   Dispute,
   Payment,
@@ -148,7 +151,53 @@ export function generate() {
   }
 
   const payouts = generatePayouts(payments)
-  return { payments, refunds, disputes, payouts }
+  // Cards draw from the shared PRNG last so every earlier seed stays identical.
+  const cards = generateCards()
+  return { payments, refunds, disputes, payouts, cards }
+}
+
+/** UUID-shaped and deterministic, so seed ids are stable but never sequential. */
+function uuidFrom(): string {
+  const hex = () => Math.floor(rand() * 16).toString(16)
+  const run = (n: number) => Array.from({ length: n }, hex).join("")
+  return `${run(8)}-${run(4)}-4${run(3)}-${run(4)}-${run(12)}`
+}
+
+const SEED_CARDS: {
+  nickname: string
+  merchantIndex: number
+  status: CardStatus
+  spendLimit: number
+  spent: number
+}[] = [
+  { nickname: "Ad spend", merchantIndex: 0, status: "active", spendLimit: 250_000, spent: 86_400 },
+  { nickname: "Vendor SaaS", merchantIndex: 3, status: "active", spendLimit: 40_000, spent: 35_200 },
+  { nickname: "Contractor tools", merchantIndex: 4, status: "active", spendLimit: 120_000, spent: 0 },
+  { nickname: "Trade show travel", merchantIndex: 1, status: "frozen", spendLimit: 500_000, spent: 212_750 },
+  { nickname: "Print vendor", merchantIndex: 6, status: "cancelled", spendLimit: 15_000, spent: 15_000 },
+  { nickname: "Cloud hosting", merchantIndex: 8, status: "active", spendLimit: 80_000, spent: 12_345 },
+]
+
+function generateCards(): Card[] {
+  return SEED_CARDS.map((seed) => {
+    const merchant = merchants[seed.merchantIndex]
+    const createdAt = new Date(GENERATED_AT)
+    createdAt.setUTCDate(createdAt.getUTCDate() - between(1, 60))
+    createdAt.setUTCHours(between(8, 18), between(0, 59), 0, 0)
+    const number = buildCardNumber(pad(between(0, 99_999_999_999), 11))
+    return {
+      id: uuidFrom(),
+      merchantId: merchant.id,
+      nickname: seed.nickname,
+      currency: merchant.currency,
+      spendLimit: seed.spendLimit,
+      spent: seed.spent,
+      last4: number.slice(-4),
+      numberRef: uuidFrom(),
+      status: seed.status,
+      createdAt: createdAt.toISOString(),
+    }
+  })
 }
 
 function generatePayouts(payments: Payment[]): Payout[] {
