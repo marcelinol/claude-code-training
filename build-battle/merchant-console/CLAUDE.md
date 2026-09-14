@@ -46,16 +46,18 @@ These four explain most of the code, and breaking them is how bugs get in here.
 - Generated numbers use the `4242` test BIN and a valid Luhn check digit. Nothing here may resemble a real PAN.
 - The full number is returned exactly once, in the creation response. After that, last four only.
 - Status is a state machine: `active ⇄ frozen`, either to `cancelled`, and `cancelled` is terminal.
+- Card ids and number references are UUIDs, never sequential.
+- The spend limit arrives as the string the user typed and is parsed once, on the server, with `parseAmountToMinorUnits`.
 
 ## Layout
 
 | Path | What lives there |
 | --- | --- |
-| `src/app/` | Console routes: overview, payments, disputes, payouts. Cards is NWP-201 and does not exist yet |
+| `src/app/` | Console routes: overview, payments, disputes, payouts, cards |
 | `src/app/api/` | Route handlers |
 | `src/data/` | Seed JSON, the in-memory store, and types |
 | `src/components/` | Tremor-based primitives and the console's own components |
-| `src/lib/` | Money, date, and CSV helpers, each with a `.test.ts` beside it. Read these before touching an amount |
+| `src/lib/` | Money, date, CSV, and card-number helpers, each with a `.test.ts` beside it. Read these before touching an amount or a card number |
 
 ## Before you push
 
