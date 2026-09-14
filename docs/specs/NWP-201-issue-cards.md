@@ -5,7 +5,7 @@
 
 **Ticket:** [NWP-201](../tickets/NWP-201.md)
 **Author:** Luciano Medeiros
-**Status:** building
+**Status:** done
 
 ## Problem
 
@@ -99,11 +99,25 @@ Build cards as a sibling of payments using the same shapes: a `Card` type and `c
 - The full number could linger in React state after the drawer closes. Mitigation: reset all form and reveal state in the drawer's `onOpenChange(false)`.
 - Time. Core first; freeze/unfreeze and the spend bar only if the clock allows.
 
+## Stretch, built after core
+
+Added once the core was green, in this order, each with a failing test first where there was a seam to test:
+
+| Item | Where |
+| --- | --- |
+| Freeze / unfreeze without reload | `transitionCard` + `POST /api/cards/[id]/status` + `card-actions.tsx`, `router.refresh()` after |
+| Spend bar, amber past 80% | `cards/[id]/page.tsx`, `role="progressbar"`, static Tailwind width classes |
+| Merchant category lock | `CardCategory` allowlist in `card-rules.ts`, required at issue, shown on list and detail |
+| Currency must match merchant | `parseIssueCardInput` rejects a mismatch with the merchant's currency in the message |
+| Honest spend | `spent` removed from `Card`; `spentFor` sums `CardCharge` rows; seeds generate charge rows, not totals |
+| Idempotent issue | UUID `idempotencyKey` required; `store.issuedCardsByKey`; replay returns the card with `number: null` |
+| Cancel from the UI with confirm | Drawer confirmation in `card-actions.tsx`; `cancelled` is terminal, so the copy says so |
+| Audit trail | `CardEvent` rows recorded on issue and every transition; shown as History on the detail page |
+
 ## Out of scope
 
 - Persistence (NWP-203), auth and roles, real issuer calls, editing a limit after issue (NWP-202).
-- Freeze/unfreeze, spend bar, category lock: stretch, tracked in the ticket, built only after core is done.
 
 ## Open questions
 
-- None at build start. Currency defaults to the merchant's but is not enforced to match; the ticket only requires the USD/EUR/GBP allowlist.
+- None. The one deferred at build start (should currency be forced to match the merchant?) was resolved yes, after the first review round.

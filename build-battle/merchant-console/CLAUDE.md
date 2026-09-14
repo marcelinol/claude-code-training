@@ -47,7 +47,9 @@ These four explain most of the code, and breaking them is how bugs get in here.
 - The full number is returned exactly once, in the creation response. After that, last four only.
 - Status is a state machine: `active ⇄ frozen`, either to `cancelled`, and `cancelled` is terminal.
 - Card ids and number references are UUIDs, never sequential.
-- The spend limit arrives as the string the user typed and is parsed once, on the server, with `parseAmountToMinorUnits`.
+- The spend limit arrives as the string the user typed and is parsed once, on the server, with `parseAmountToMinorUnits`. It is issued in the merchant's settlement currency.
+- Spend is the sum of a card's charge rows, never a stored field. Every status change is a recorded event.
+- Issue requests carry an idempotency key; a retry returns the same card without the number.
 
 ## Layout
 
