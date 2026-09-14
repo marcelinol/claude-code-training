@@ -12,9 +12,13 @@ import { listCards } from "@/data/cards"
 import { merchantById, merchants } from "@/data/merchants"
 import { formatDate } from "@/lib/dates"
 import { formatMoney } from "@/lib/money"
+import { CATEGORY_LABELS } from "@/data/card-rules"
 import Link from "next/link"
-import { CardStatusButton } from "./card-status-button"
+import { CardActions } from "./card-actions"
 import { IssueCardDialog } from "./issue-card-dialog"
+
+// Reads the in-memory store on every request; a build-time snapshot would never show new cards.
+export const dynamic = "force-dynamic"
 
 export default function CardsPage() {
   const cards = listCards()
@@ -46,6 +50,7 @@ export default function CardsPage() {
             <TableRow>
               <TableHeaderCell>Card</TableHeaderCell>
               <TableHeaderCell>Merchant</TableHeaderCell>
+              <TableHeaderCell>Category</TableHeaderCell>
               <TableHeaderCell>Number</TableHeaderCell>
               <TableHeaderCell className="text-right">Limit</TableHeaderCell>
               <TableHeaderCell>Status</TableHeaderCell>
@@ -58,7 +63,7 @@ export default function CardsPage() {
           <TableBody>
             {cards.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="py-16 text-center">
+                <TableCell colSpan={8} className="py-16 text-center">
                   <p className="font-medium text-gray-900 dark:text-gray-50">
                     No cards issued yet
                   </p>
@@ -80,6 +85,9 @@ export default function CardsPage() {
                   </Link>
                 </TableCell>
                 <TableCell>{merchantById(card.merchantId)?.name}</TableCell>
+                <TableCell className="text-gray-500">
+                  {CATEGORY_LABELS[card.category]}
+                </TableCell>
                 <TableCell className="font-mono text-gray-500">
                   •••• {card.last4}
                 </TableCell>
@@ -91,9 +99,10 @@ export default function CardsPage() {
                 </TableCell>
                 <TableCell>{formatDate(card.createdAt)}</TableCell>
                 <TableCell className="text-right">
-                  <CardStatusButton
+                  <CardActions
                     cardId={card.id}
                     nickname={card.nickname}
+                    last4={card.last4}
                     status={card.status}
                   />
                 </TableCell>

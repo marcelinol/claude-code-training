@@ -20,16 +20,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/Select"
-import { Card, Currency } from "@/data/types"
+import {
+  CARD_CATEGORIES,
+  CARD_CURRENCIES,
+  CATEGORY_LABELS,
+  MAX_SPEND_LIMIT,
+} from "@/data/card-rules"
+import { Card, CardCategory, Currency } from "@/data/types"
+import { formatMoney } from "@/lib/money"
 import { Check, Copy, Plus } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useState } from "react"
 
-const CURRENCIES: Currency[] = ["USD", "EUR", "GBP"]
-
 const labelClass = "text-sm font-medium text-gray-900 dark:text-gray-50"
 
-type Issued = { card: Card; number: string }
+type Issued = { card: Card; number: string | null; replayed: boolean }
 
 /** Posts the form as typed. The route validates and converts everything. */
 export function IssueCardDialog({
@@ -43,20 +48,25 @@ export function IssueCardDialog({
   const [merchantId, setMerchantId] = useState("")
   const [currency, setCurrency] = useState<Currency>("USD")
   const [spendLimit, setSpendLimit] = useState("")
+  const [category, setCategory] = useState<CardCategory | "">("")
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [issued, setIssued] = useState<Issued | null>(null)
   const [copied, setCopied] = useState(false)
+  // One key per attempt, so a double-click or retry cannot mint a second card.
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID())
 
   const reset = () => {
     setNickname("")
     setMerchantId("")
     setCurrency("USD")
     setSpendLimit("")
+    setCategory("")
     setError(null)
     setSubmitting(false)
     setIssued(null)
     setCopied(false)
+    setIdempotencyKey(crypto.randomUUID())
   }
 
   const onOpenChange = (next: boolean) => {
@@ -82,11 +92,23 @@ export function IssueCardDialog({
       const response = await fetch("/api/cards", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ nickname, merchantId, spendLimit, currency }),
+        body: JSON.stringify({
+          nickname,
+          merchantId,
+          spendLimit,
+          currency,
+          category,
+          idempotencyKey,
+        }),
       })
       const body = await response.json().catch(() => null)
       if (!response.ok) {
         setError(body?.message ?? "The card could not be issued. Try again.")
+        return
+      }
+      if (!body?.card) {
+        // The card exists server-side; the same key on retry returns it rather than a second card.
+        setError("The card was issued but the response could not be read. Submit again to see it.")
         return
       }
       setIssued(body as Issued)
@@ -98,9 +120,13 @@ export function IssueCardDialog({
   }
 
   const copyNumber = async () => {
-    if (!issued) return
-    await navigator.clipboard.writeText(issued.number)
-    setCopied(true)
+    if (!issued?.number) return
+    try {
+      await navigator.clipboard.writeText(issued.number)
+      setCopied(true)
+    } catch {
+      setError("Copy is not available here. Select the number and copy it by hand.")
+    }
   }
 
   return (
@@ -121,29 +147,46 @@ export function IssueCardDialog({
               </DrawerDescription>
             </DrawerHeader>
             <DrawerBody className="flex flex-col gap-4">
-              <p className="text-sm text-gray-500">
-                This is the only time the full number is shown. After you close
-                this panel it appears as •••• {issued.card.last4} everywhere.
-              </p>
-              <div className="flex items-center justify-between gap-3 rounded-md border border-gray-200 px-3 py-3 dark:border-gray-800">
-                <span className="font-mono text-lg tabular-nums tracking-wider text-gray-900 dark:text-gray-50">
-                  {issued.number.replace(/(\d{4})(?=\d)/g, "$1 ")}
-                </span>
-                <Button
-                  variant="secondary"
-                  className="gap-2 py-1.5"
-                  onClick={copyNumber}
-                >
-                  {copied ? (
-                    <Check className="size-4" aria-hidden="true" />
-                  ) : (
-                    <Copy className="size-4" aria-hidden="true" />
-                  )}
-                  {copied ? "Copied" : "Copy"}
-                </Button>
-              </div>
+              {issued.number ? (
+                <>
+                  <p className="text-sm text-gray-500">
+                    This is the only time the full number is shown. After you
+                    close this panel it appears as •••• {issued.card.last4}{" "}
+                    everywhere.
+                  </p>
+                  <div className="flex items-center justify-between gap-3 rounded-md border border-gray-200 px-3 py-3 dark:border-gray-800">
+                    <span className="font-mono text-lg tabular-nums tracking-wider text-gray-900 dark:text-gray-50">
+                      {issued.number.replace(/(\d{4})(?=\d)/g, "$1 ")}
+                    </span>
+                    <Button
+                      variant="secondary"
+                      className="gap-2 py-1.5"
+                      onClick={copyNumber}
+                    >
+                      {copied ? (
+                        <Check className="size-4" aria-hidden="true" />
+                      ) : (
+                        <Copy className="size-4" aria-hidden="true" />
+                      )}
+                      {copied ? "Copied" : "Copy"}
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-gray-500">
+                  This request had already been issued as •••• {issued.card.last4}.
+                  The full number was shown once, on the first attempt, and
+                  cannot be shown again.
+                </p>
+              )}
             </DrawerBody>
-            <DrawerFooter>
+            <DrawerFooter className="items-center">
+              <p
+                className="text-sm text-red-600 dark:text-red-500 sm:mr-auto"
+                aria-live="polite"
+              >
+                {error}
+              </p>
               <DrawerClose asChild>
                 <Button variant="primary" className="w-full sm:w-fit">
                   Done
@@ -194,6 +237,27 @@ export function IssueCardDialog({
                 </Select>
               </div>
 
+              <div className="flex flex-col gap-2">
+                <label htmlFor="card-category" className={labelClass}>
+                  Category lock
+                </label>
+                <Select
+                  value={category}
+                  onValueChange={(value) => setCategory(value as CardCategory)}
+                >
+                  <SelectTrigger id="card-category">
+                    <SelectValue placeholder="What the card may be used for" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CARD_CATEGORIES.map((code) => (
+                      <SelectItem key={code} value={code}>
+                        {CATEGORY_LABELS[code]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
               <div className="grid grid-cols-[1fr_7rem] gap-3">
                 <div className="flex flex-col gap-2">
                   <label htmlFor="card-limit" className={labelClass}>
@@ -221,7 +285,7 @@ export function IssueCardDialog({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {CURRENCIES.map((code) => (
+                      {CARD_CURRENCIES.map((code) => (
                         <SelectItem key={code} value={code}>
                           {code}
                         </SelectItem>
@@ -231,8 +295,9 @@ export function IssueCardDialog({
                 </div>
               </div>
               <p className="text-xs text-gray-500">
-                Up to 50,000.00. The limit applies from the moment the card
-                exists.
+                Up to {formatMoney(MAX_SPEND_LIMIT, currency)}, in the
+                merchant&apos;s settlement currency. The limit applies from the
+                moment the card exists.
               </p>
             </DrawerBody>
 
