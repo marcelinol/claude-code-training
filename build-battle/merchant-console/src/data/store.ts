@@ -1,6 +1,14 @@
 import { generate } from "./generate"
 import { merchants } from "./merchants"
-import { Card, Dispute, Payment, Payout, Refund } from "./types"
+import {
+  Card,
+  CardCharge,
+  CardEvent,
+  Dispute,
+  Payment,
+  Payout,
+  Refund,
+} from "./types"
 
 /**
  * In-memory store.
@@ -20,6 +28,10 @@ interface Store {
   disputes: Dispute[]
   payouts: Payout[]
   cards: Card[]
+  cardCharges: CardCharge[]
+  cardEvents: CardEvent[]
+  /** Idempotency key -> card id, so a retried issue returns the same card. */
+  issuedCardsByKey: Map<string, string>
 }
 
 declare global {
@@ -28,15 +40,20 @@ declare global {
 }
 
 function createStore(): Store {
-  const { payments, refunds, disputes, payouts, cards } = generate()
+  const { payments, refunds, disputes, payouts, cards, cardCharges, cardEvents } =
+    generate()
+  // Seed cards exist for the dev experience; production starts from what ops issued.
+  const seedCards = process.env.NODE_ENV !== "production"
   return {
     merchants,
     payments,
     refunds,
     disputes,
     payouts,
-    // Seed cards exist for the dev experience; production starts from what ops issued.
-    cards: process.env.NODE_ENV === "production" ? [] : cards,
+    cards: seedCards ? cards : [],
+    cardCharges: seedCards ? cardCharges : [],
+    cardEvents: seedCards ? cardEvents : [],
+    issuedCardsByKey: new Map(),
   }
 }
 

@@ -1,4 +1,5 @@
-import { CARD_STATUSES, transitionCard } from "@/data/cards"
+import { CARD_STATUSES } from "@/data/card-rules"
+import { transitionCard } from "@/data/cards"
 import { CardStatus } from "@/data/types"
 import { NextRequest, NextResponse } from "next/server"
 

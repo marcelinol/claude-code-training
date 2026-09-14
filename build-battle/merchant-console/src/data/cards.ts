@@ -1,21 +1,28 @@
 import { randomUUID } from "node:crypto"
 import { generateCardNumber } from "@/lib/card-number"
-import { parseAmountToMinorUnits } from "@/lib/money"
+import { formatMoney, parseAmountToMinorUnits, sumMinorUnits } from "@/lib/money"
+import { CARD_CATEGORIES, CARD_CURRENCIES, MAX_SPEND_LIMIT } from "./card-rules"
 import { merchantById } from "./merchants"
 import { store } from "./store"
-import { Card, CardStatus, Currency } from "./types"
+import {
+  Card,
+  CardCategory,
+  CardCharge,
+  CardEvent,
+  CardEventType,
+  CardStatus,
+  Currency,
+} from "./types"
 
-export const CARD_CURRENCIES: readonly Currency[] = ["USD", "EUR", "GBP"]
-/** 5,000,000 minor units: the ceiling the ticket sets for any single card. */
-export const MAX_SPEND_LIMIT = 5_000_000
 const MAX_NICKNAME_LENGTH = 40
 
-export interface IssueCardInput {
+interface IssueCardInput {
   nickname: string
   merchantId: string
   /** Integer minor units. */
   spendLimit: number
   currency: Currency
+  category: CardCategory
 }
 
 type ParseResult =
@@ -32,10 +39,8 @@ export function parseIssueCardInput(body: unknown): ParseResult {
   if (typeof body !== "object" || body === null) {
     return reject("The request body must be a JSON object.")
   }
-  const { nickname, merchantId, spendLimit, currency } = body as Record<
-    string,
-    unknown
-  >
+  const { nickname, merchantId, spendLimit, currency, category } =
+    body as Record<string, unknown>
 
   const name = typeof nickname === "string" ? nickname.trim() : ""
   if (!name) return reject("Give the card a nickname.")
@@ -43,9 +48,8 @@ export function parseIssueCardInput(body: unknown): ParseResult {
     return reject(`Nicknames are at most ${MAX_NICKNAME_LENGTH} characters.`)
   }
 
-  if (typeof merchantId !== "string" || !merchantById(merchantId)) {
-    return reject("Choose a merchant.")
-  }
+  const merchant = typeof merchantId === "string" ? merchantById(merchantId) : undefined
+  if (!merchant) return reject("Choose a merchant.")
 
   const limit =
     typeof spendLimit === "string" ? parseAmountToMinorUnits(spendLimit) : null
@@ -53,27 +57,54 @@ export function parseIssueCardInput(body: unknown): ParseResult {
     return reject("Enter the spend limit as an amount like 250.00.")
   }
   if (limit <= 0) return reject("The spend limit must be more than zero.")
-  if (limit > MAX_SPEND_LIMIT) {
-    return reject("The spend limit cannot exceed 50,000.00.")
-  }
 
   if (!CARD_CURRENCIES.includes(currency as Currency)) {
     return reject("Currency must be USD, EUR, or GBP.")
+  }
+  if (limit > MAX_SPEND_LIMIT) {
+    return reject(
+      `The spend limit cannot exceed ${formatMoney(MAX_SPEND_LIMIT, currency as Currency)}.`,
+    )
+  }
+  if (currency !== merchant.currency) {
+    return reject(`${merchant.name} settles in ${merchant.currency}; the card currency must match.`)
+  }
+
+  if (!CARD_CATEGORIES.includes(category as CardCategory)) {
+    return reject("Choose the merchant category the card is locked to.")
   }
 
   return {
     ok: true,
     input: {
       nickname: name,
-      merchantId,
+      merchantId: merchant.id,
       spendLimit: limit,
       currency: currency as Currency,
+      category: category as CardCategory,
     },
   }
 }
 
-/** Creates the card and returns its full number exactly once. It is never stored. */
-export function issueCard(input: IssueCardInput): { card: Card; number: string } {
+function record(cardId: string, type: CardEventType): CardEvent {
+  const event = { id: randomUUID(), cardId, type, at: new Date().toISOString() }
+  store.cardEvents.push(event)
+  return event
+}
+
+type IssueResult =
+  | { card: Card; number: string; replayed: false }
+  | { card: Card; number: null; replayed: true }
+
+/**
+ * Creates the card and returns its full number exactly once. A retry with the
+ * same idempotency key gets the same card back, without the number.
+ */
+export function issueCard(input: IssueCardInput, idempotencyKey: string): IssueResult {
+  const existingId = store.issuedCardsByKey.get(idempotencyKey)
+  const existing = existingId ? cardById(existingId) : null
+  if (existing) return { card: existing, number: null, replayed: true }
+
   const number = generateCardNumber()
   const card: Card = {
     id: randomUUID(),
@@ -81,14 +112,16 @@ export function issueCard(input: IssueCardInput): { card: Card; number: string }
     nickname: input.nickname,
     currency: input.currency,
     spendLimit: input.spendLimit,
-    spent: 0,
+    category: input.category,
     last4: number.slice(-4),
     numberRef: randomUUID(),
     status: "active",
     createdAt: new Date().toISOString(),
   }
   store.cards.push(card)
-  return { card, number }
+  store.issuedCardsByKey.set(idempotencyKey, card.id)
+  record(card.id, "issued")
+  return { card, number, replayed: false }
 }
 
 /** Newest first. */
@@ -100,6 +133,25 @@ export function cardById(id: string): Card | null {
   return store.cards.find((card) => card.id === id) ?? null
 }
 
+/** Newest first. */
+export function chargesFor(cardId: string): CardCharge[] {
+  return store.cardCharges
+    .filter((charge) => charge.cardId === cardId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
+/** Integer minor units in the card's currency. Derived, never stored. */
+export function spentFor(cardId: string): number {
+  return sumMinorUnits(chargesFor(cardId).map((charge) => charge.amount))
+}
+
+/** Oldest first, so it reads as a timeline. */
+export function eventsFor(cardId: string): CardEvent[] {
+  return store.cardEvents
+    .filter((event) => event.cardId === cardId)
+    .sort((a, b) => a.at.localeCompare(b.at))
+}
+
 const TRANSITIONS: Record<CardStatus, readonly CardStatus[]> = {
   active: ["frozen", "cancelled"],
   frozen: ["active", "cancelled"],
@@ -109,8 +161,6 @@ const TRANSITIONS: Record<CardStatus, readonly CardStatus[]> = {
 export function canTransition(from: CardStatus, to: CardStatus): boolean {
   return TRANSITIONS[from].includes(to)
 }
-
-export const CARD_STATUSES: readonly CardStatus[] = ["active", "frozen", "cancelled"]
 
 type TransitionResult =
   | { ok: true; card: Card }
@@ -124,5 +174,6 @@ export function transitionCard(id: string, to: CardStatus): TransitionResult {
     return { ok: false, reason: "invalid_transition" }
   }
   card.status = to
+  record(card.id, to === "active" ? "unfrozen" : to)
   return { ok: true, card }
 }

@@ -13,6 +13,17 @@ export type PayoutStatus = "paid" | "in_transit" | "pending"
 
 export type CardStatus = "active" | "frozen" | "cancelled"
 
+/** The merchant category a card is locked to at issue. */
+export type CardCategory =
+  | "advertising"
+  | "software"
+  | "travel"
+  | "contractors"
+  | "office_supplies"
+  | "other"
+
+export type CardEventType = "issued" | "frozen" | "unfrozen" | "cancelled"
+
 export interface Merchant {
   id: string
   name: string
@@ -79,16 +90,32 @@ export interface Card {
   merchantId: string
   nickname: string
   currency: Currency
-  /** Integer minor units. Never a float. */
+  /** Integer minor units. Never a float. Spend is derived from CardCharge rows. */
   spendLimit: number
-  /** Integer minor units. Never a float. */
-  spent: number
+  category: CardCategory
   /** The full number is never stored. Only these two survive creation. */
   last4: string
   numberRef: string
   status: CardStatus
   /** ISO 8601, always UTC. */
   createdAt: string
+}
+
+export interface CardCharge {
+  id: string
+  cardId: string
+  /** Integer minor units, in the card's currency. */
+  amount: number
+  currency: Currency
+  description: string
+  createdAt: string
+}
+
+export interface CardEvent {
+  id: string
+  cardId: string
+  type: CardEventType
+  at: string
 }
 
 export interface PaymentFilters {

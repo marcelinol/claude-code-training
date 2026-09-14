@@ -3,9 +3,12 @@ import { isLuhnValid } from "@/lib/card-number"
 import {
   canTransition,
   cardById,
+  chargesFor,
+  eventsFor,
   issueCard,
   listCards,
   parseIssueCardInput,
+  spentFor,
   transitionCard,
 } from "./cards"
 import { store } from "./store"
@@ -15,6 +18,13 @@ const good = {
   merchantId: "mch_01",
   spendLimit: "250.00",
   currency: "USD",
+  category: "advertising",
+}
+
+const issue = (key = crypto.randomUUID()) => {
+  const parsed = parseIssueCardInput(good)
+  if (!parsed.ok) throw new Error(parsed.message)
+  return issueCard(parsed.input, key)
 }
 
 describe("parseIssueCardInput", () => {
@@ -27,6 +37,7 @@ describe("parseIssueCardInput", () => {
         merchantId: "mch_01",
         spendLimit: 25000,
         currency: "USD",
+        category: "advertising",
       },
     })
   })
@@ -55,6 +66,19 @@ describe("parseIssueCardInput", () => {
     expect(parseIssueCardInput({ ...good, currency: "JPY" }).ok).toBe(false)
   })
 
+  it("rejects a currency that does not match the merchant's", () => {
+    // mch_04 (Halcyon Studio) settles in GBP.
+    const result = parseIssueCardInput({ ...good, merchantId: "mch_04", currency: "USD" })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.message).toMatch(/GBP/)
+    expect(parseIssueCardInput({ ...good, merchantId: "mch_04", currency: "GBP" }).ok).toBe(true)
+  })
+
+  it("rejects a missing or unknown category", () => {
+    expect(parseIssueCardInput({ ...good, category: undefined }).ok).toBe(false)
+    expect(parseIssueCardInput({ ...good, category: "gambling" }).ok).toBe(false)
+  })
+
   it("rejects a blank nickname and trims a padded one", () => {
     expect(parseIssueCardInput({ ...good, nickname: "   " }).ok).toBe(false)
     const result = parseIssueCardInput({ ...good, nickname: "  Ad spend  " })
@@ -76,22 +100,48 @@ describe("parseIssueCardInput", () => {
 describe("issueCard", () => {
   it("stores a masked active card and returns the full number once", () => {
     const before = store.cards.length
-    const parsed = parseIssueCardInput(good)
-    if (!parsed.ok) throw new Error(parsed.message)
-
-    const { card, number } = issueCard(parsed.input)
+    const result = issue()
+    expect(result.replayed).toBe(false)
+    const { card, number } = result
 
     expect(number).toMatch(/^4242\d{12}$/)
-    expect(isLuhnValid(number)).toBe(true)
-    expect(card.last4).toBe(number.slice(-4))
+    expect(isLuhnValid(number!)).toBe(true)
+    expect(card.last4).toBe(number!.slice(-4))
     expect(card.status).toBe("active")
-    expect(card.spent).toBe(0)
+    expect(card.category).toBe("advertising")
     expect(card.spendLimit).toBe(25000)
     expect(card.id).toMatch(/^[0-9a-f-]{36}$/)
     expect(JSON.stringify(card)).not.toContain(number)
     expect(store.cards.length).toBe(before + 1)
     expect(cardById(card.id)).toEqual(card)
     expect(listCards()[0]).toEqual(card)
+  })
+
+  it("starts with no spend and an issued event", () => {
+    const { card } = issue()
+    expect(spentFor(card.id)).toBe(0)
+    expect(chargesFor(card.id)).toEqual([])
+    expect(eventsFor(card.id).map((e) => e.type)).toEqual(["issued"])
+  })
+
+  it("replays the same card for the same idempotency key without the number", () => {
+    const key = crypto.randomUUID()
+    const first = issue(key)
+    const before = store.cards.length
+    const second = issue(key)
+    expect(second.replayed).toBe(true)
+    expect(second.card).toEqual(first.card)
+    expect(second.number).toBeNull()
+    expect(store.cards.length).toBe(before)
+  })
+})
+
+describe("spentFor", () => {
+  it("is the sum of the card's charges in minor units", () => {
+    const seeded = store.cards.find((c) => chargesFor(c.id).length > 0)!
+    const expected = chargesFor(seeded.id).reduce((sum, c) => sum + c.amount, 0)
+    expect(spentFor(seeded.id)).toBe(expected)
+    expect(Number.isInteger(spentFor(seeded.id))).toBe(true)
   })
 })
 
@@ -116,26 +166,22 @@ describe("canTransition", () => {
 })
 
 describe("transitionCard", () => {
-  const issue = () => {
-    const parsed = parseIssueCardInput(good)
-    if (!parsed.ok) throw new Error(parsed.message)
-    return issueCard(parsed.input).card
-  }
-
-  it("freezes an active card and thaws it again", () => {
-    const card = issue()
+  it("freezes an active card and thaws it again, recording each move", () => {
+    const { card } = issue()
     expect(transitionCard(card.id, "frozen")).toEqual({ ok: true, card: { ...card, status: "frozen" } })
     expect(cardById(card.id)?.status).toBe("frozen")
     expect(transitionCard(card.id, "active")).toMatchObject({ ok: true, card: { status: "active" } })
+    expect(eventsFor(card.id).map((e) => e.type)).toEqual(["issued", "frozen", "unfrozen"])
   })
 
-  it("refuses a move the state machine does not allow", () => {
-    const card = issue()
+  it("refuses a move the state machine does not allow and records nothing", () => {
+    const { card } = issue()
     transitionCard(card.id, "cancelled")
     const result = transitionCard(card.id, "active")
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.reason).toBe("invalid_transition")
     expect(cardById(card.id)?.status).toBe("cancelled")
+    expect(eventsFor(card.id).map((e) => e.type)).toEqual(["issued", "cancelled"])
   })
 
   it("reports an unknown card separately from a refused move", () => {

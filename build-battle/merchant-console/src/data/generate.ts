@@ -2,6 +2,9 @@ import { buildCardNumber } from "@/lib/card-number"
 import { merchants } from "./merchants"
 import {
   Card,
+  CardCategory,
+  CardCharge,
+  CardEvent,
   CardStatus,
   Currency,
   Dispute,
@@ -152,52 +155,109 @@ export function generate() {
 
   const payouts = generatePayouts(payments)
   // Cards draw from the shared PRNG last so every earlier seed stays identical.
-  const cards = generateCards()
-  return { payments, refunds, disputes, payouts, cards }
+  const { cards, cardCharges, cardEvents } = generateCards()
+  return { payments, refunds, disputes, payouts, cards, cardCharges, cardEvents }
 }
 
-/** UUID-shaped and deterministic, so seed ids are stable but never sequential. */
+/** A deterministic RFC 4122 v4 UUID, so seed ids are stable but never sequential. */
 function uuidFrom(): string {
   const hex = () => Math.floor(rand() * 16).toString(16)
   const run = (n: number) => Array.from({ length: n }, hex).join("")
-  return `${run(8)}-${run(4)}-4${run(3)}-${run(4)}-${run(12)}`
+  const variant = pick(["8", "9", "a", "b"])
+  return `${run(8)}-${run(4)}-4${run(3)}-${variant}${run(3)}-${run(12)}`
 }
 
+const CHARGE_DESCRIPTIONS: Record<CardCategory, string[]> = {
+  advertising: ["Search ads", "Social campaign", "Sponsored listing"],
+  software: ["Monthly subscription", "Seat upgrade", "Annual licence"],
+  travel: ["Rail fare", "Hotel deposit", "Conference pass"],
+  contractors: ["Design retainer", "Copywriting", "Bookkeeping"],
+  office_supplies: ["Print run", "Packaging", "Stationery"],
+  other: ["Miscellaneous"],
+}
+
+/**
+ * Each seed card gets a utilisation band. Charges are generated to land in
+ * it, so spend on the detail page is always the sum of real charge rows.
+ */
 const SEED_CARDS: {
   nickname: string
   merchantIndex: number
   status: CardStatus
+  category: CardCategory
   spendLimit: number
-  spent: number
+  utilisation: [number, number]
+  charges: number
 }[] = [
-  { nickname: "Ad spend", merchantIndex: 0, status: "active", spendLimit: 250_000, spent: 86_400 },
-  { nickname: "Vendor SaaS", merchantIndex: 3, status: "active", spendLimit: 40_000, spent: 35_200 },
-  { nickname: "Contractor tools", merchantIndex: 4, status: "active", spendLimit: 120_000, spent: 0 },
-  { nickname: "Trade show travel", merchantIndex: 1, status: "frozen", spendLimit: 500_000, spent: 212_750 },
-  { nickname: "Print vendor", merchantIndex: 6, status: "cancelled", spendLimit: 15_000, spent: 15_000 },
-  { nickname: "Cloud hosting", merchantIndex: 8, status: "active", spendLimit: 80_000, spent: 12_345 },
+  { nickname: "Ad spend", merchantIndex: 0, status: "active", category: "advertising", spendLimit: 250_000, utilisation: [30, 40], charges: 4 },
+  { nickname: "Vendor SaaS", merchantIndex: 3, status: "active", category: "software", spendLimit: 40_000, utilisation: [85, 95], charges: 3 },
+  { nickname: "Contractor tools", merchantIndex: 4, status: "active", category: "contractors", spendLimit: 120_000, utilisation: [0, 0], charges: 0 },
+  { nickname: "Trade show travel", merchantIndex: 1, status: "frozen", category: "travel", spendLimit: 500_000, utilisation: [40, 50], charges: 5 },
+  { nickname: "Print vendor", merchantIndex: 6, status: "cancelled", category: "office_supplies", spendLimit: 15_000, utilisation: [100, 100], charges: 2 },
+  { nickname: "Cloud hosting", merchantIndex: 8, status: "active", category: "software", spendLimit: 80_000, utilisation: [10, 20], charges: 2 },
 ]
 
-function generateCards(): Card[] {
-  return SEED_CARDS.map((seed) => {
+/** Split `total` into `parts` positive integers that sum exactly to it. */
+function splitMinorUnits(total: number, parts: number): number[] {
+  if (parts === 0) return []
+  const cuts = Array.from({ length: parts - 1 }, () => between(1, total - 1)).sort((a, b) => a - b)
+  const amounts: number[] = []
+  let previous = 0
+  for (const cut of [...cuts, total]) {
+    amounts.push(cut - previous)
+    previous = cut
+  }
+  return amounts
+}
+
+function generateCards() {
+  const cards: Card[] = []
+  const cardCharges: CardCharge[] = []
+  const cardEvents: CardEvent[] = []
+
+  for (const seed of SEED_CARDS) {
     const merchant = merchants[seed.merchantIndex]
     const createdAt = new Date(GENERATED_AT)
-    createdAt.setUTCDate(createdAt.getUTCDate() - between(1, 60))
+    createdAt.setUTCDate(createdAt.getUTCDate() - between(20, 60))
     createdAt.setUTCHours(between(8, 18), between(0, 59), 0, 0)
     const number = buildCardNumber(pad(between(0, 99_999_999_999), 11))
-    return {
+
+    const card: Card = {
       id: uuidFrom(),
       merchantId: merchant.id,
       nickname: seed.nickname,
       currency: merchant.currency,
       spendLimit: seed.spendLimit,
-      spent: seed.spent,
+      category: seed.category,
       last4: number.slice(-4),
       numberRef: uuidFrom(),
       status: seed.status,
       createdAt: createdAt.toISOString(),
     }
-  })
+    cards.push(card)
+    cardEvents.push({ id: uuidFrom(), cardId: card.id, type: "issued", at: card.createdAt })
+
+    const [low, high] = seed.utilisation
+    const target = Math.round((seed.spendLimit * between(low, high)) / 100)
+    splitMinorUnits(target, seed.charges).forEach((amount, index) => {
+      const at = new Date(createdAt.getTime() + (index + 1) * between(1, 4) * 86_400_000)
+      cardCharges.push({
+        id: uuidFrom(),
+        cardId: card.id,
+        amount,
+        currency: card.currency,
+        description: pick(CHARGE_DESCRIPTIONS[seed.category]),
+        createdAt: at.toISOString(),
+      })
+    })
+
+    if (seed.status !== "active") {
+      const at = new Date(createdAt.getTime() + between(15, 19) * 86_400_000)
+      cardEvents.push({ id: uuidFrom(), cardId: card.id, type: seed.status, at: at.toISOString() })
+    }
+  }
+
+  return { cards, cardCharges, cardEvents }
 }
 
 function generatePayouts(payments: Payment[]): Payout[] {

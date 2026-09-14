@@ -5,7 +5,7 @@ import { randomInt } from "node:crypto"
  * 4242 test BIN so nothing in this repository can resemble a real PAN.
  */
 
-export const TEST_BIN = "4242"
+const TEST_BIN = "4242"
 const BODY_LENGTH = 11
 
 function luhnSum(digits: string, doubleFromRight: boolean): number {
