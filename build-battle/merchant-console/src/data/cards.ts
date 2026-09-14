@@ -109,3 +109,20 @@ const TRANSITIONS: Record<CardStatus, readonly CardStatus[]> = {
 export function canTransition(from: CardStatus, to: CardStatus): boolean {
   return TRANSITIONS[from].includes(to)
 }
+
+export const CARD_STATUSES: readonly CardStatus[] = ["active", "frozen", "cancelled"]
+
+type TransitionResult =
+  | { ok: true; card: Card }
+  | { ok: false; reason: "not_found" | "invalid_transition" }
+
+/** The server-side guard. The UI only offers moves; this decides them. */
+export function transitionCard(id: string, to: CardStatus): TransitionResult {
+  const card = cardById(id)
+  if (!card) return { ok: false, reason: "not_found" }
+  if (!canTransition(card.status, to)) {
+    return { ok: false, reason: "invalid_transition" }
+  }
+  card.status = to
+  return { ok: true, card }
+}

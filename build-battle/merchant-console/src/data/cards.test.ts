@@ -6,6 +6,7 @@ import {
   issueCard,
   listCards,
   parseIssueCardInput,
+  transitionCard,
 } from "./cards"
 import { store } from "./store"
 
@@ -111,5 +112,34 @@ describe("canTransition", () => {
   it("does not count staying put as a transition", () => {
     expect(canTransition("active", "active")).toBe(false)
     expect(canTransition("frozen", "frozen")).toBe(false)
+  })
+})
+
+describe("transitionCard", () => {
+  const issue = () => {
+    const parsed = parseIssueCardInput(good)
+    if (!parsed.ok) throw new Error(parsed.message)
+    return issueCard(parsed.input).card
+  }
+
+  it("freezes an active card and thaws it again", () => {
+    const card = issue()
+    expect(transitionCard(card.id, "frozen")).toEqual({ ok: true, card: { ...card, status: "frozen" } })
+    expect(cardById(card.id)?.status).toBe("frozen")
+    expect(transitionCard(card.id, "active")).toMatchObject({ ok: true, card: { status: "active" } })
+  })
+
+  it("refuses a move the state machine does not allow", () => {
+    const card = issue()
+    transitionCard(card.id, "cancelled")
+    const result = transitionCard(card.id, "active")
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toBe("invalid_transition")
+    expect(cardById(card.id)?.status).toBe("cancelled")
+  })
+
+  it("reports an unknown card separately from a refused move", () => {
+    const result = transitionCard("00000000-0000-4000-8000-000000000000", "frozen")
+    expect(result).toEqual({ ok: false, reason: "not_found" })
   })
 })
